@@ -31,12 +31,95 @@ This pipeline implements a comprehensive demand forecasting system with the foll
 - Combines selected K features + Poisson prediction features
 - Trains final LightGBM model on 80/20 time-series split
 
-## Key Features
+いいね、この説明を足すと「なぜこのスキームが効くのか」がすごく伝わりやすくなるやつだね。
+そのまま README にコピペできる形で書いてみたよ。
 
-- **Time-series aware**: Prevents data leakage by ensuring no date overlap between train/validation
-- **Zero-inflation handling**: Uses Tweedie loss and Poisson regression for count data
-- **Robust preprocessing**: Winsorization, standardization, and proper handling of categorical variables
-- **Comprehensive evaluation**: RMSE, MAE, sMAPE, R², and bias metrics
+⸻
+
+## Training Data Setup
+
+This pipeline is designed for generic store-level demand forecasting and can be applied to both weekly and daily data. The main requirements for the training data are:
+	•	Categorical identifiers
+	•	At minimum, the dataset should include:
+	•	product_code: identifier for each product
+	•	store_id: identifier for each store
+	•	Additional categorical fields describing product attributes (e.g., tag, group_code) can also be included and are treated as categorical features.
+	•	Time granularity
+	•	The scheme is applicable to both weekly and daily demand data.
+	•	In this project, the data is weekly, but the same structure can be used for other frequencies.
+	•	Multi-horizon target construction
+	•	To predict demand for the next N time steps, the pipeline assumes:
+	•	You create N datasets, each with a different target:
+	•	For horizon i (where 1 \le i \le N), the target is the demand i steps ahead.
+	•	In other words, each horizon has its own shifted target column.
+	•	Additionally, you create a separate sum dataset whose target is the sum of demand over the next N steps.
+	•	This gives you:
+	•	N “point forecast” tasks (h1, h2, …, hN)
+	•	1 “sum forecast” task (sum of h1–hN)
+	•	Feature engineering
+	•	On top of the above, you can add standard time-series and categorical features, such as:
+	•	Lag features and rolling statistics (e.g., rolling mean, trend)
+	•	Calendar features (day of week, holidays, campaigns)
+	•	Product/store-level attributes and encodings
+
+This structure allows the same pipeline to be reused for multiple horizons and for both point-wise and aggregated demand forecasting.
+
+
+## Why This Scheme Works Well for Store-Level Demand Forecasting
+
+Store-level demand forecasting typically has several challenging characteristics:
+	1.	Zero inflation and negative bias
+	•	When you look at sales for each (store, product) pair, many days or weeks have zero sales.
+	•	This zero inflation often causes models to develop a strong negative bias (they underestimate demand), especially when trained directly on sparse count data.
+	2.	Weak correlation for distant horizons
+	•	The correlation between past features and far-future targets becomes weaker as the horizon increases.
+	•	As a result, forecast accuracy naturally degrades with horizon length, and the negative bias tends to be even stronger for distant steps.
+	3.	Business impact of underestimation
+	•	In demand forecasting for inventory and store operations, underestimation is often more damaging than overestimation, because it directly leads to stockouts and lost sales.
+	•	Therefore, controlling negative bias is especially important.
+
+This pipeline addresses these issues through several design choices:
+
+### 1. Sum-based scaling to reduce negative bias
+	•	In addition to predicting each horizon h_1, h_2, \dots, h_N independently, the pipeline also predicts the sum of demand over the next N steps.
+	•	The sum forecast tends to be more stable and less noisy than each individual horizon, and it is less affected by zero inflation at a single time point.
+	•	By using the sum forecast to scale the individual horizon predictions, the pipeline:
+	•	Aligns the total predicted demand with the model’s best estimate of overall future demand.
+	•	Reduces the tendency toward negative bias across all horizons.
+	•	This is particularly effective in store-level demand forecasting, where the main goal is to avoid systematic underestimation rather than perfectly fitting every individual zero.
+
+### 2. Horizon-specific feature selection with cross-validation
+	•	For each task (sum, h1–hN), the pipeline:
+	•	Computes feature importance using LightGBM with time-series cross-validation.
+	•	Performs a K-grid search over different numbers of top features (e.g., K = 60, 120, 180, 240, 300).
+	•	Selects the K that achieves the best validation performance for that specific horizon.
+	•	As a result:
+	•	Each horizon uses a tailored subset of features, rather than a one-size-fits-all feature set.
+	•	The model becomes less “uniform” across horizons and better adapted to the signal strength at each step.
+	•	This leads to improved accuracy for both near-term and long-term forecasts.
+
+### 3. Ensemble with Poisson / Negative Binomial models for count data
+	•	Store-level demand is count data with zero inflation, which is not perfectly modeled by standard Gaussian assumptions.
+	•	The pipeline:
+	•	Trains Poisson or Negative Binomial regression models (with Ridge regularization) on a subset of informative features.
+	•	Uses these models to generate additional prediction features (e.g., expected count from Poisson/NB).
+	•	These predicted counts are then fed as features into the final LightGBM model, which creates an ensemble effect:
+	•	The count models capture structure that is natural for zero-inflated count data.
+	•	LightGBM combines this with rich nonlinear interactions from other features.
+	•	In practice, this improves metrics such as R^2 and reduces bias.
+
+### 4. Time-series awareness and robust preprocessing
+	•	The pipeline enforces time-series-aware splits to avoid look-ahead leakage:
+	•	No overlapping dates between train and validation.
+	•	It also includes:
+	•	Winsorization to handle extreme values,
+	•	Standardization where appropriate,
+	•	Proper encoding for categorical variables.
+	•	This ensures that the evaluation is realistic and that the model remains stable across different time spans, products, and stores.
+
+
+Putting these elements together, this learning scheme has shown consistent accuracy improvements in store-level demand forecasting tasks, especially in scenarios with strong zero inflation and multi-step horizons.
+It is designed not just to fit historical data, but to address the specific structural challenges of retail demand forecasting: sparse sales, horizon-dependent signal strength, and the critical need to avoid systematic underestimation.
 
 ## Requirements
 
