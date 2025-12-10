@@ -64,4 +64,3 @@ The pipeline generates:
 ## License
 
 See repository for license information.
-
